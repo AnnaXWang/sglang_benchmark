@@ -39,12 +39,14 @@ from typing import Optional
 import numpy as np
 from openai import AsyncOpenAI
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 log = logging.getLogger("benchmark")
+log.setLevel(logging.INFO)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+)
+log.addHandler(_console_handler)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -224,9 +226,20 @@ def build_server_cmd(framework: str, model_path: str, port: int) -> list[str]:
         raise ValueError(f"Unknown framework: {framework}")
 
 
-def launch_server(framework: str, model_path: str, port: int) -> subprocess.Popen:
+def launch_server(
+    framework: str, model_path: str, port: int, log_dir: Path | None = None,
+) -> subprocess.Popen:
     cmd = build_server_cmd(framework, model_path, port)
     log.info("Launching %s server: %s", framework, " ".join(cmd))
+
+    if log_dir:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        server_log = log_dir / f"{framework}_{ts}.log"
+        log.info("Server log: %s", server_log)
+        log_f = open(server_log, "w")
+        return subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
+
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
@@ -413,6 +426,7 @@ async def run_concurrency_ramp(
     warmup_requests: list[PromptRequest],
     port: int,
     model_name: str,
+    log_dir: Path | None = None,
 ) -> list[ScenarioResult]:
     """Run high-concurrency scenario with per-level server restarts."""
     results = []
@@ -420,7 +434,7 @@ async def run_concurrency_ramp(
     for level in CONCURRENCY_LEVELS:
         log.info("=== Concurrency level: %d ===", level)
 
-        proc = launch_server(framework, model_path, port)
+        proc = launch_server(framework, model_path, port, log_dir=log_dir)
         healthy = await wait_for_health(port)
 
         if not healthy:
@@ -746,6 +760,7 @@ async def run_framework(
     prompts_data: dict,
     port: int,
     validate: bool,
+    log_dir: Path | None = None,
 ) -> dict[str, ScenarioResult]:
     results: dict[str, ScenarioResult] = {}
     model_name = Path(model_path).name
@@ -759,6 +774,7 @@ async def run_framework(
             level_results = await run_concurrency_ramp(
                 framework, model_path, scenario,
                 warmup_requests, port, model_name,
+                log_dir=log_dir,
             )
             for lr in level_results:
                 results[lr.scenario] = lr
@@ -767,7 +783,7 @@ async def run_framework(
         # Standard scenario: single server lifecycle
         log.info("=== %s / %s ===", framework.upper(), scenario_name)
 
-        proc = launch_server(framework, model_path, port)
+        proc = launch_server(framework, model_path, port, log_dir=log_dir)
         healthy = await wait_for_health(port)
 
         if not healthy:
@@ -834,7 +850,21 @@ async def main() -> None:
         "--validate", action="store_true",
         help="Cross-validate against SGLang's bench_serving.py",
     )
+    parser.add_argument(
+        "--log-dir", type=Path, default=Path(__file__).parent / "logs",
+        help="Directory for server stdout/stderr logs (default: benchmark/logs/)",
+    )
     args = parser.parse_args()
+
+    # Set up file logging for the benchmark harness itself
+    args.log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_handler = logging.FileHandler(args.log_dir / f"benchmark_{ts}.log")
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    )
+    log.addHandler(file_handler)
+    log.info("Logging to %s", args.log_dir)
 
     frameworks = [args.framework] if args.framework else ["sglang", "vllm"]
     scenarios = [args.scenario] if args.scenario else SCENARIO_ORDER
@@ -859,6 +889,7 @@ async def main() -> None:
         results = await run_framework(
             framework, args.model_path, scenarios,
             prompts_data, args.port, args.validate,
+            log_dir=args.log_dir,
         )
         all_results[framework] = results
 
