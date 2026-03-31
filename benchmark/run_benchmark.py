@@ -53,7 +53,7 @@ log.addHandler(_console_handler)
 # ---------------------------------------------------------------------------
 
 DEFAULT_PORT = 30000
-HEALTH_TIMEOUT_S = 60
+HEALTH_TIMEOUT_S = 240
 HEALTH_POLL_INTERVAL_S = 2
 WARMUP_REQUESTS = 10
 REQUEST_TIMEOUT_S = 120
