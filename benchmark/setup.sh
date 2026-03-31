@@ -37,7 +37,7 @@ pip install "torch==${TORCH_VERSION}"
 # flashinfer-python wheels aren't on PyPI — must use their custom index
 pip install "sglang[all]==0.5.9" \
     --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer/
-pip install openai numpy pandas rich
+pip install openai numpy pandas rich aiohttp
 deactivate
 echo "  SGLang venv ready."
 
@@ -52,7 +52,7 @@ source /workspace/vllm-env/bin/activate
 pip install --upgrade pip
 pip install "torch==${TORCH_VERSION}"
 pip install "vllm==${VLLM_VERSION}"
-pip install openai numpy pandas rich
+pip install openai numpy pandas rich aiohttp
 deactivate
 echo "  vLLM venv ready."
 

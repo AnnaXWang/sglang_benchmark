@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import aiohttp
 import numpy as np
 from openai import AsyncOpenAI
 
@@ -184,6 +185,7 @@ class ScenarioResult:
     e2e_p50_ms: float = 0.0
     e2e_p90_ms: float = 0.0
     error_count: int = 0
+    cache_hit_rate: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +214,7 @@ def build_server_cmd(framework: str, model_path: str, port: int) -> list[str]:
             "--host", "127.0.0.1",
             "--port", str(port),
             "--mem-fraction-static", "0.8",
+            "--enable-metrics",
         ]
     elif framework == "vllm":
         return [
@@ -299,6 +302,56 @@ async def wait_for_gpu_release() -> None:
         await asyncio.sleep(GPU_RELEASE_POLL_S)
     log.warning("GPU memory did not drop below %d MB within %ds",
                 GPU_MEMORY_THRESHOLD_MB, GPU_RELEASE_TIMEOUT_S)
+
+
+# ---------------------------------------------------------------------------
+# Metrics collection
+# ---------------------------------------------------------------------------
+
+
+async def fetch_cache_hit_rate(port: int, framework: str) -> Optional[float]:
+    """Fetch prefix cache hit rate from the server's /metrics endpoint."""
+    url = f"http://127.0.0.1:{port}/metrics"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    log.warning("Metrics endpoint returned %d", resp.status)
+                    return None
+                text = await resp.text()
+    except Exception as e:
+        log.warning("Failed to fetch metrics: %s", e)
+        return None
+
+    if framework == "sglang":
+        # sglang exposes a gauge: sglang:cache_hit_rate or sglang_cache_hit_rate
+        for line in text.splitlines():
+            if line.startswith(("sglang:cache_hit_rate", "sglang_cache_hit_rate")) and not line.startswith("#"):
+                try:
+                    return float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+    elif framework == "vllm":
+        # vllm exposes counters: vllm:prefix_cache_hits and vllm:prefix_cache_queries
+        hits = None
+        queries = None
+        for line in text.splitlines():
+            if line.startswith("#"):
+                continue
+            if line.startswith(("vllm:prefix_cache_hits", "vllm_prefix_cache_hits")):
+                try:
+                    hits = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+            elif line.startswith(("vllm:prefix_cache_queries", "vllm_prefix_cache_queries")):
+                try:
+                    queries = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+        if queries and queries > 0:
+            return hits / queries
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +452,7 @@ async def run_scenario(
     scenario: LoadedScenario,
     model: str,
     framework: str,
+    port: int = DEFAULT_PORT,
 ) -> ScenarioResult:
     """Run a scenario and collect timing data."""
     log.info("Running scenario '%s' on %s (%d requests, concurrency=%d)",
@@ -417,6 +471,11 @@ async def run_scenario(
     result.requests = list(request_results)
 
     compute_metrics(result)
+
+    result.cache_hit_rate = await fetch_cache_hit_rate(port, framework)
+    if result.cache_hit_rate is not None:
+        log.info("Cache hit rate: %.2f%%", result.cache_hit_rate * 100)
+
     return result
 
 
@@ -459,7 +518,7 @@ async def run_concurrency_ramp(
             description=f"High concurrency at level {level}",
         )
 
-        result = await run_scenario(client, level_scenario, model_name, framework)
+        result = await run_scenario(client, level_scenario, model_name, framework, port=port)
         results.append(result)
 
         kill_server(proc)
@@ -626,6 +685,7 @@ def write_results_json(
                 "total_tokens": result.total_tokens,
                 "wall_clock_s": result.wall_clock_s,
                 "error_count": result.error_count,
+                "cache_hit_rate": result.cache_hit_rate,
                 "num_requests": len(result.requests),
                 "per_request": [asdict(r) for r in result.requests],
             }
@@ -644,7 +704,7 @@ def write_comparison_csv(
         "ttft_p50_ms", "ttft_p90_ms", "ttft_p99_ms",
         "tpot_p50_ms", "tpot_p90_ms", "tpot_p99_ms",
         "e2e_p50_ms", "throughput_tok_s",
-        "total_tokens", "error_count",
+        "total_tokens", "error_count", "cache_hit_rate",
     ]
 
     with open(output_path, "w", newline="") as f:
@@ -666,6 +726,7 @@ def write_comparison_csv(
                     "throughput_tok_s": f"{result.throughput_tok_s:.1f}",
                     "total_tokens": result.total_tokens,
                     "error_count": result.error_count,
+                    "cache_hit_rate": f"{result.cache_hit_rate:.4f}" if result.cache_hit_rate is not None else "",
                 })
     log.info("Comparison CSV written to %s", output_path)
 
@@ -803,7 +864,7 @@ async def run_framework(
         )
 
         await run_warmup_phase(client, warmup_requests, model_name)
-        result = await run_scenario(client, scenario, model_name, framework)
+        result = await run_scenario(client, scenario, model_name, framework, port=port)
         results[scenario_name] = result
 
         log.info(
