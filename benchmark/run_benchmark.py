@@ -893,12 +893,16 @@ async def main() -> None:
         )
         all_results[framework] = results
 
-    # Write outputs
+    # Write outputs with unique filenames based on run parameters
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    write_results_json(all_results, output_dir / "results.json", metadata)
-    write_comparison_csv(all_results, output_dir / "comparison.csv")
+    fw_label = "_".join(frameworks)
+    sc_label = "_".join(scenarios)
+    run_tag = f"{fw_label}_{sc_label}_{ts}"
+
+    write_results_json(all_results, output_dir / f"results_{run_tag}.json", metadata)
+    write_comparison_csv(all_results, output_dir / f"comparison_{run_tag}.csv")
 
     if "sglang" in all_results and "vllm" in all_results:
         print_comparison_table(all_results["sglang"], all_results["vllm"])
