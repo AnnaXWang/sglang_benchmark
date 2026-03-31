@@ -12,7 +12,7 @@ set -euo pipefail
 MODEL_ID="deepseek-ai/DeepSeek-V2-Lite-Chat"
 MODEL_DIR="/workspace/models/DeepSeek-V2-Lite-Chat"
 TORCH_VERSION="2.5.1"
-VLLM_VERSION="0.6.6"
+VLLM_VERSION="0.18.0"
 
 echo "============================================"
 echo "  SGLang vs vLLM Benchmark Setup"
