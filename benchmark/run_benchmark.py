@@ -53,7 +53,7 @@ log.addHandler(_console_handler)
 # ---------------------------------------------------------------------------
 
 DEFAULT_PORT = 30000
-HEALTH_TIMEOUT_S = 240
+HEALTH_TIMEOUT_S = 600
 HEALTH_POLL_INTERVAL_S = 2
 WARMUP_REQUESTS = 10
 REQUEST_TIMEOUT_S = 120
@@ -228,7 +228,7 @@ def build_server_cmd(framework: str, model_path: str, port: int) -> list[str]:
 
 def launch_server(
     framework: str, model_path: str, port: int, log_dir: Path | None = None,
-) -> subprocess.Popen:
+) -> tuple[subprocess.Popen, Path | None]:
     cmd = build_server_cmd(framework, model_path, port)
     log.info("Launching %s server: %s", framework, " ".join(cmd))
 
@@ -238,9 +238,10 @@ def launch_server(
         server_log = log_dir / f"{framework}_{ts}.log"
         log.info("Server log: %s", server_log)
         log_f = open(server_log, "w")
-        return subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
+        return proc, server_log
 
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE), None
 
 
 async def wait_for_health(port: int, timeout_s: int = HEALTH_TIMEOUT_S) -> bool:
@@ -434,12 +435,14 @@ async def run_concurrency_ramp(
     for level in CONCURRENCY_LEVELS:
         log.info("=== Concurrency level: %d ===", level)
 
-        proc = launch_server(framework, model_path, port, log_dir=log_dir)
+        proc, server_log = launch_server(framework, model_path, port, log_dir=log_dir)
         healthy = await wait_for_health(port)
 
         if not healthy:
-            stderr = get_server_stderr(proc)
-            log.error("Server failed at concurrency=%d. stderr:\n%s", level, stderr)
+            if server_log:
+                log.error("Server failed at concurrency=%d. Check log: %s", level, server_log)
+            else:
+                log.error("Server failed at concurrency=%d. stderr:\n%s", level, get_server_stderr(proc))
             kill_server(proc)
             await wait_for_gpu_release()
             log.info("Concurrency ceiling detected at level %d", level)
@@ -783,12 +786,14 @@ async def run_framework(
         # Standard scenario: single server lifecycle
         log.info("=== %s / %s ===", framework.upper(), scenario_name)
 
-        proc = launch_server(framework, model_path, port, log_dir=log_dir)
+        proc, server_log = launch_server(framework, model_path, port, log_dir=log_dir)
         healthy = await wait_for_health(port)
 
         if not healthy:
-            stderr = get_server_stderr(proc)
-            log.error("Server failed to start. stderr:\n%s", stderr)
+            if server_log:
+                log.error("Server failed to start. Check log: %s", server_log)
+            else:
+                log.error("Server failed to start. stderr:\n%s", get_server_stderr(proc))
             kill_server(proc)
             await wait_for_gpu_release()
             continue
