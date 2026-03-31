@@ -766,7 +766,7 @@ async def run_framework(
     log_dir: Path | None = None,
 ) -> dict[str, ScenarioResult]:
     results: dict[str, ScenarioResult] = {}
-    model_name = Path(model_path).name
+    model_name = model_path  # vLLM registers the model by its full path
     warmup_requests = load_warmup(prompts_data)
 
     for scenario_name in scenarios_to_run:
